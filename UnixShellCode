@@ -1,0 +1,161 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+enum{STEP = 2, LAST, OKEY, SYNTAX, FIRST, NO};
+struct vector{
+        int flag;
+        char **vec;
+};
+
+void free_vec(char **vec){
+        for(int i = 0; vec[i] != NULL; i++){
+                free(vec[i]);
+        }
+        free(vec);
+}
+
+void close_pipes(int fd[2]){
+        close(fd[1]);
+        close(fd[0]);
+}
+
+char skip_tab(){
+        char c;
+        c = getchar();
+        while(c == ' ') c = getchar();
+        return c;
+}
+
+struct vector make_cmd(){
+        struct vector cmd;
+        cmd.flag = OKEY;
+        cmd.vec = (char**)malloc(sizeof(char*)*STEP);
+        if(cmd.vec == NULL){
+                perror("Not enough memory\n");
+                fflush(stderr);
+                return cmd;
+        }
+        cmd.vec[0] = NULL;
+        int count_str = 0, flag1 = 0, flag2 = 0, count_symb = 0, mem_symb = STEP, mem_str = STEP;
+        char c = getchar();
+        if(c == ' ') c = skip_tab();
+        while(c != '|' && c != EOF && c != '\n'){
+                while(c == '\'' || c == '\"'){
+                        if(c == '\'') flag1 = (flag1+1)%2;
+                        if(c == '\"') flag2 = (flag2+1)%2;
+                        if(flag1 || flag2) c = getchar();
+                        else c = skip_tab();
+                }
+                if(c == '|' || c == EOF || c == '\n'){
+                        cmd.flag = SYNTAX;
+                        break;
+                }
+                if(count_str >= mem_str){
+                        mem_str*=STEP;
+                        cmd.vec = (char**)realloc(cmd.vec, sizeof(char*)*mem_str);
+                        if(cmd.vec == NULL){
+                                perror("Not enough memory\n");
+                                fflush(stderr);
+                                return cmd;
+                        }
+                }
+                cmd.vec[count_str] = (char*)malloc(sizeof(char)*STEP);
+                if(cmd.vec[count_str] == NULL){
+                        perror("Not enough memory\n");
+                        fflush(stderr);
+                        return cmd;
+                }
+                while(c != EOF && c != '\n'){
+                        if((c == ' ' || c == '|') && flag1 == 0 && flag2 == 0) break;
+                        cmd.vec[count_str][count_symb] = c;
+                        if(c == '\'' && flag2 == 0){
+                                count_symb--;
+                                flag1 = (flag1+1)%2;
+                        }
+                        if(c == '\"' && flag1 == 0){
+                                count_symb--;
+                                flag2 = (flag2+1)%2;
+                        }
+                        if(count_symb >= mem_symb){
+                                mem_symb*=STEP;
+                                cmd.vec[count_str] = (char*)realloc(cmd.vec[count_str], sizeof(char)*mem_symb);
+                                if(cmd.vec[count_str] == NULL){
+                                        perror("Not enough memory\n");
+                                        fflush(stderr);
+                                        return cmd;
+                                }
+                        }
+                        count_symb++;
+                        c = getchar();
+                }
+                cmd.vec[count_str][count_symb] = '\0';
+                count_symb = 0;
+                if(c == ' ') c = skip_tab();
+                if(c == EOF || c == '|' || c == '\n'){
+                        if(c == EOF || c == '\n') cmd.flag = LAST;
+                        break;
+                }
+                count_str++;
+
+        }
+        if(cmd.vec[0] == NULL || flag1 == 1 || flag2 == 1){
+                cmd.flag = SYNTAX;
+        }
+        return cmd;
+}
+
+void make_process(int fd[2], int flag){
+        pid_t pid;
+        int fd_out[2], status;
+        if(pipe(fd_out) < 0){
+                perror("Pipe error\n");
+                fflush(stderr);
+        }
+        struct vector cmd = make_cmd();
+        if((pid = fork()) == 0){
+                if(cmd.flag == SYNTAX){
+                        close_pipes(fd);
+                        fprintf(stderr, "Syntax error\n");
+                        fflush(stderr);
+                        exit(-1);
+                }
+                if(flag != FIRST) dup2(fd[0], 0);
+                if(cmd.flag != LAST) dup2(fd_out[1], 1);
+                if(flag != FIRST) close_pipes(fd);
+                close_pipes(fd_out);
+                execvp(cmd.vec[0], cmd.vec);
+                fprintf(stderr, "Command %s not found\n", cmd.vec[0]);
+                fflush(stderr);
+                exit(-1);
+        }
+        else if(pid > 0){
+                close_pipes(fd);
+                wait(&status);
+                if(WEXITSTATUS(status) || cmd.flag == SYNTAX || cmd.flag == LAST){
+                        close_pipes(fd);
+                        close_pipes(fd_out);
+                        exit(0);
+                }
+                make_process(fd_out, NO);
+                close_pipes(fd_out);
+                close_pipes(fd);
+                exit(0);
+        }
+        else{
+                close_pipes(fd);
+                close_pipes(fd_out);
+                perror("Fork error\n");
+                fflush(stderr);
+                exit(0);
+        }
+}
+
+int main(){
+        int fd[2] = {NO, NO};
+        make_process(fd, FIRST);
+        return 0;
+}
